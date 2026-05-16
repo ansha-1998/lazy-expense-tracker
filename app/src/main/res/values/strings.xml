@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Expense Tracker</string>
+    <string name="tab_unclassified">Unclassified</string>
+    <string name="tab_transactions">Transactions</string>
+    <string name="tab_summary">Summary</string>
+    <string name="notification_channel_name">Expense Alerts</string>
+    <string name="notification_channel_desc">Notifications for detected bank transactions</string>
+    <string name="widget_description">Couple Expense Tracker Widget</string>
+</resources>
