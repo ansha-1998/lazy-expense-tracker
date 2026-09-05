@@ -2,8 +2,10 @@ package com.couple.expensetracker.ui.screens
 
 import android.content.Intent
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
 import com.couple.expensetracker.data.db.entities.MonthlySummaryEntity
-import com.couple.expensetracker.data.db.entities.PartnerSummaryEntity
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -20,6 +22,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.couple.expensetracker.ui.components.MonthPicker
+import com.couple.expensetracker.ui.viewmodel.CategoryFilter
+import com.couple.expensetracker.ui.viewmodel.SharedPersonData
 import com.couple.expensetracker.ui.viewmodel.SummaryViewModel
 import com.couple.expensetracker.util.DateUtils
 import kotlinx.coroutines.flow.collectLatest
@@ -30,18 +34,27 @@ private val PIE_COLORS = listOf(
     Color(0xFF607D8B)
 )
 
+// Colors assigned to shared persons by index (index 0 = first shared person)
+private val PERSON_COLORS = listOf(
+    Color(0xFF4CAF50), Color(0xFF2196F3), Color(0xFFFF9800),
+    Color(0xFFE91E63), Color(0xFF9C27B0), Color(0xFF00BCD4), Color(0xFFFF5722)
+)
+
 @Composable
 fun SummaryScreen(viewModel: SummaryViewModel = hiltViewModel()) {
     val context = LocalContext.current
     val selectedTab by viewModel.selectedTab.collectAsState()
     val monthKey by viewModel.monthKey.collectAsState()
     val mySummary by viewModel.mySummary.collectAsState()
-    val partnerSummary by viewModel.partnerSummary.collectAsState()
     val lastSynced by viewModel.lastSynced.collectAsState()
-    val categoryBreakdown by viewModel.categoryBreakdown.collectAsState()
-    val allTimeCategoryBreakdown by viewModel.allTimeCategoryBreakdown.collectAsState()
+    val categoryBreakdown by viewModel.filteredCategoryBreakdown.collectAsState()
+    val categoryFilter by viewModel.categoryFilter.collectAsState()
+    val allTimeCategoryBreakdown by viewModel.filteredAllTimeCategoryBreakdown.collectAsState()
+    val allTimeCategoryFilter by viewModel.allTimeCategoryFilter.collectAsState()
     val allTimeMySummary by viewModel.allTimeMySummary.collectAsState()
-    val allTimePartnerCombinedTotal by viewModel.allTimePartnerCombinedTotal.collectAsState()
+    val sharedPersonsData by viewModel.sharedPersonsData.collectAsState()
+    val myBalance by viewModel.myBalance.collectAsState()
+    val allTimeSharedPersonsData by viewModel.allTimeSharedPersonsData.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -50,12 +63,10 @@ fun SummaryScreen(viewModel: SummaryViewModel = hiltViewModel()) {
     }
 
     LaunchedEffect(Unit) {
-        viewModel.csvShareIntent.collectLatest { intent ->
-            context.startActivity(intent)
-        }
+        viewModel.csvShareIntent.collectLatest { intent -> context.startActivity(intent) }
     }
 
-    val isPartnerStale = remember(lastSynced) {
+    val isSharedStale = remember(lastSynced) {
         lastSynced == 0L || (System.currentTimeMillis() - lastSynced) > 24 * 60 * 60 * 1000L
     }
 
@@ -82,10 +93,14 @@ fun SummaryScreen(viewModel: SummaryViewModel = hiltViewModel()) {
                 MonthlyTab(
                     monthKey = monthKey,
                     mySummary = mySummary,
-                    partnerSummary = partnerSummary,
+                    sharedPersonsData = sharedPersonsData,
+                    myBalance = myBalance,
                     lastSynced = lastSynced,
-                    isPartnerStale = isPartnerStale,
+                    isSharedStale = isSharedStale,
                     categoryBreakdown = categoryBreakdown,
+                    categoryFilter = categoryFilter,
+                    onCategoryFilterChange = viewModel::setCategoryFilter,
+                    onSettleUp = viewModel::settleUp,
                     onPrevious = viewModel::goToPreviousMonth,
                     onNext = viewModel::goToNextMonth,
                     onExportCsv = { viewModel.exportCsv(context) }
@@ -93,8 +108,10 @@ fun SummaryScreen(viewModel: SummaryViewModel = hiltViewModel()) {
             } else {
                 TotalTab(
                     allTimeMySummary = allTimeMySummary,
-                    allTimePartnerCombinedTotal = allTimePartnerCombinedTotal,
+                    allTimeSharedPersonsData = allTimeSharedPersonsData,
                     categoryBreakdown = allTimeCategoryBreakdown,
+                    categoryFilter = allTimeCategoryFilter,
+                    onCategoryFilterChange = viewModel::setAllTimeCategoryFilter,
                     lastSynced = lastSynced
                 )
             }
@@ -106,10 +123,14 @@ fun SummaryScreen(viewModel: SummaryViewModel = hiltViewModel()) {
 private fun MonthlyTab(
     monthKey: String,
     mySummary: MonthlySummaryEntity?,
-    partnerSummary: PartnerSummaryEntity?,
+    sharedPersonsData: List<SharedPersonData>,
+    myBalance: Double,
     lastSynced: Long,
-    isPartnerStale: Boolean,
+    isSharedStale: Boolean,
     categoryBreakdown: Map<String, Double>,
+    categoryFilter: CategoryFilter,
+    onCategoryFilterChange: (CategoryFilter) -> Unit,
+    onSettleUp: (username: String, balance: Double, amount: Double) -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onExportCsv: () -> Unit
@@ -135,54 +156,166 @@ private fun MonthlyTab(
             SummaryRow("My Total", mySummary?.grandTotal, bold = true)
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        if (sharedPersonsData.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(16.dp))
 
-        SummarySection(title = "PARTNER EXPENSES (Combined only)") {
-            if (partnerSummary != null) {
-                SummaryRow("Partner Combined", partnerSummary.combinedTotal)
-            } else {
-                Text(
-                    text = "—",
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            if (isPartnerStale) {
-                Text(
-                    text = if (lastSynced == 0L) "⚠ Partner data never synced"
-                    else "⚠ Partner data not synced · Last synced: ${DateUtils.formatLastSynced(lastSynced)}",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                )
+            val myCombined = mySummary?.combinedTotal ?: 0.0
+            val totalCombined = myCombined + sharedPersonsData.sumOf { it.combinedTotal }
+
+            SummarySection(title = "COMBINED SPLIT") {
+                var splitDetailsExpanded by remember { mutableStateOf(false) }
+                var settleUpTarget by remember { mutableStateOf<SharedPersonData?>(null) }
+
+                // ── Settlement rows first (always visible) ──────────────
+                sharedPersonsData.forEach { person ->
+                    when {
+                        person.balance < -0.01 ->
+                            SettlementRowWithButton(
+                                label = "${person.username} owes me",
+                                amount = -person.balance,
+                                isOwedToMe = true,
+                                settledThisMonth = person.settledThisMonth,
+                                lastSettledBy = person.lastSettledBy,
+                                onSettleUp = { settleUpTarget = person }
+                            )
+                        person.balance > 0.01 ->
+                            SettlementRowWithButton(
+                                label = "I owe ${person.username}",
+                                amount = person.balance,
+                                isOwedToMe = false,
+                                settledThisMonth = person.settledThisMonth,
+                                lastSettledBy = person.lastSettledBy,
+                                onSettleUp = { settleUpTarget = person }
+                            )
+                        else ->
+                            SettlementRow("Settled with ${person.username}", 0.0, isOwedToMe = null, settledThisMonth = person.settledThisMonth, lastSettledBy = person.lastSettledBy)
+                    }
+                }
+
+                // ── Settle Up confirmation dialog ────────────────────────
+                settleUpTarget?.let { target ->
+                    val iOweThem = target.balance > 0
+                    val displayAmount = kotlin.math.abs(target.balance)
+                    var amountText by remember(target) { mutableStateOf("%.2f".format(displayAmount)) }
+                    val enteredAmount = amountText.toDoubleOrNull()
+                    val isValid = enteredAmount != null && enteredAmount > 0.0
+
+                    AlertDialog(
+                        onDismissRequest = { settleUpTarget = null },
+                        title = { Text("Settle Up") },
+                        text = {
+                            Column {
+                                Text(
+                                    if (iOweThem)
+                                        "How much did you pay ${target.username}?"
+                                    else
+                                        "How much did you receive from ${target.username}?"
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                OutlinedTextField(
+                                    value = amountText,
+                                    onValueChange = { amountText = it },
+                                    label = { Text("Amount") },
+                                    prefix = { Text("₹") },
+                                    singleLine = true,
+                                    isError = !isValid,
+                                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Outstanding balance: ₹${"%.2f".format(displayAmount)}. This records the payment as settled — it will not be added as an expense.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(
+                                enabled = isValid,
+                                onClick = {
+                                    onSettleUp(target.username, target.balance, enteredAmount!!)
+                                    settleUpTarget = null
+                                }
+                            ) { Text("Confirm") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { settleUpTarget = null }) { Text("Cancel") }
+                        }
+                    )
+                }
+                if (sharedPersonsData.size > 1) {
+                    Divider(modifier = Modifier.padding(vertical = 4.dp))
+                    when {
+                        myBalance > 0.01 -> SettlementRow("Net: others owe me", myBalance, isOwedToMe = true)
+                        myBalance < -0.01 -> SettlementRow("Net: I owe others", -myBalance, isOwedToMe = false)
+                        else -> SettlementRow("Net: All settled", 0.0, isOwedToMe = null)
+                    }
+                }
+
+                // ── Collapsible details ──────────────────────────────────
+                Divider(modifier = Modifier.padding(vertical = 4.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { splitDetailsExpanded = !splitDetailsExpanded }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Details",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = if (splitDetailsExpanded) "▲" else "▼",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                if (splitDetailsExpanded) {
+                    val myShare = myCombined - myBalance
+                    SummaryRow("My contribution", myCombined)
+                    SummaryRow("My share", myShare)
+
+                    sharedPersonsData.forEachIndexed { idx, person ->
+                        val color = PERSON_COLORS[idx % PERSON_COLORS.size]
+                        val personShare = person.combinedTotal - person.balance
+                        Divider(modifier = Modifier.padding(vertical = 2.dp))
+                        ColoredPersonRow("${person.username}'s contribution", person.combinedTotal, color)
+                        ColoredPersonRow("${person.username}'s share", personShare, color)
+                        if (person.settledThisMonth > 0.01) {
+                            ColoredPersonRow("${person.username}'s settled amount", person.settledThisMonth, color)
+                        }
+                    }
+
+                    Divider(modifier = Modifier.padding(vertical = 4.dp))
+                    SummaryRow("Total combined", totalCombined, bold = true)
+                }
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
-
-        val myCombined = mySummary?.combinedTotal ?: 0.0
-        val partnerCombined = partnerSummary?.combinedTotal ?: 0.0
-        val totalCombined = myCombined + partnerCombined
-        val eachShare = totalCombined / 2.0
-        val myBalance = myCombined - eachShare
-
-        SummarySection(title = "COMBINED SPLIT TOTAL") {
-            SummaryRow("My contribution", myCombined)
-            SummaryRow("Partner's contribution", partnerCombined)
-            Divider(modifier = Modifier.padding(vertical = 4.dp))
-            SummaryRow("Total combined", totalCombined)
-            SummaryRow("Each share", eachShare, bold = true)
-            Divider(modifier = Modifier.padding(vertical = 4.dp))
-            when {
-                myBalance > 0.01 -> SummaryRow("Partner owes me", myBalance, bold = true)
-                myBalance < -0.01 -> SummaryRow("I owe partner", -myBalance, bold = true)
-                else -> SummaryRow("All settled", 0.0, bold = true)
-            }
+        if (sharedPersonsData.isNotEmpty() && isSharedStale) {
+            Text(
+                text = if (lastSynced == 0L) "⚠ Shared data never synced"
+                else "⚠ Last synced: ${DateUtils.formatLastSynced(lastSynced)}",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
         }
 
         if (categoryBreakdown.isNotEmpty()) {
             Spacer(modifier = Modifier.height(16.dp))
-            CategoryPieSection(breakdown = categoryBreakdown)
+            CategoryPieSection(
+                breakdown = categoryBreakdown,
+                filter = categoryFilter,
+                onFilterChange = onCategoryFilterChange
+            )
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -210,8 +343,10 @@ private fun MonthlyTab(
 @Composable
 private fun TotalTab(
     allTimeMySummary: MonthlySummaryEntity?,
-    allTimePartnerCombinedTotal: Double,
+    allTimeSharedPersonsData: List<SharedPersonData>,
     categoryBreakdown: Map<String, Double>,
+    categoryFilter: CategoryFilter,
+    onCategoryFilterChange: (CategoryFilter) -> Unit,
     lastSynced: Long
 ) {
     Column(
@@ -236,36 +371,31 @@ private fun TotalTab(
             SummaryRow("My Total", allTimeMySummary?.grandTotal, bold = true)
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        if (allTimeSharedPersonsData.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(16.dp))
 
-        SummarySection(title = "PARTNER EXPENSES (Combined only)") {
-            SummaryRow("Partner Combined", allTimePartnerCombinedTotal)
-        }
+            val myCombined = allTimeMySummary?.combinedTotal ?: 0.0
+            val totalSharedCombined = allTimeSharedPersonsData.sumOf { it.combinedTotal }
+            val totalCombined = myCombined + totalSharedCombined
 
-        Spacer(modifier = Modifier.height(16.dp))
-
-        val myCombined = allTimeMySummary?.combinedTotal ?: 0.0
-        val totalCombined = myCombined + allTimePartnerCombinedTotal
-        val eachShare = totalCombined / 2.0
-        val myBalance = myCombined - eachShare
-
-        SummarySection(title = "COMBINED SPLIT TOTAL") {
-            SummaryRow("My contribution", myCombined)
-            SummaryRow("Partner's contribution", allTimePartnerCombinedTotal)
-            Divider(modifier = Modifier.padding(vertical = 4.dp))
-            SummaryRow("Total combined", totalCombined)
-            SummaryRow("Each share", eachShare, bold = true)
-            Divider(modifier = Modifier.padding(vertical = 4.dp))
-            when {
-                myBalance > 0.01 -> SummaryRow("Partner owes me", myBalance, bold = true)
-                myBalance < -0.01 -> SummaryRow("I owe partner", -myBalance, bold = true)
-                else -> SummaryRow("All settled", 0.0, bold = true)
+            SummarySection(title = "COMBINED TOTAL") {
+                SummaryRow("My contribution", myCombined)
+                allTimeSharedPersonsData.forEachIndexed { idx, person ->
+                    val color = PERSON_COLORS[idx % PERSON_COLORS.size]
+                    ColoredPersonRow("${person.username}'s contribution", person.combinedTotal, color)
+                }
+                Divider(modifier = Modifier.padding(vertical = 4.dp))
+                SummaryRow("Total combined", totalCombined, bold = true)
             }
         }
 
         if (categoryBreakdown.isNotEmpty()) {
             Spacer(modifier = Modifier.height(16.dp))
-            CategoryPieSection(breakdown = categoryBreakdown)
+            CategoryPieSection(
+                breakdown = categoryBreakdown,
+                filter = categoryFilter,
+                onFilterChange = onCategoryFilterChange
+            )
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -280,16 +410,52 @@ private fun TotalTab(
 }
 
 @Composable
-private fun CategoryPieSection(breakdown: Map<String, Double>) {
+private fun CategoryPieSection(
+    breakdown: Map<String, Double>,
+    filter: CategoryFilter,
+    onFilterChange: (CategoryFilter) -> Unit
+) {
     SummarySection(title = "CATEGORY BREAKDOWN") {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            CategoryFilter.entries.forEach { f ->
+                FilterChip(
+                    selected = filter == f,
+                    onClick = { onFilterChange(f) },
+                    label = {
+                        Text(
+                            text = when (f) {
+                                CategoryFilter.Total -> "Total"
+                                CategoryFilter.Personal -> "Personal"
+                                CategoryFilter.Shared -> "Shared"
+                                CategoryFilter.Other -> "Other"
+                            },
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                )
+            }
+        }
+
         val total = breakdown.values.sum()
-        if (total <= 0.0) return@SummarySection
+        if (total <= 0.0) {
+            Text(
+                text = "No transactions",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
+            )
+            return@SummarySection
+        }
 
         val entries = breakdown.entries
             .sortedByDescending { it.value }
             .toList()
 
-        // Pie chart
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -315,7 +481,6 @@ private fun CategoryPieSection(breakdown: Map<String, Double>) {
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Legend
         entries.forEachIndexed { index, entry ->
             val pct = entry.value / total * 100
             Row(
@@ -324,11 +489,7 @@ private fun CategoryPieSection(breakdown: Map<String, Double>) {
                     .padding(horizontal = 8.dp, vertical = 3.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(12.dp)
-                        .padding(end = 0.dp)
-                ) {
+                Box(modifier = Modifier.size(12.dp)) {
                     Canvas(modifier = Modifier.fillMaxSize()) {
                         drawCircle(color = PIE_COLORS[index % PIE_COLORS.size])
                     }
@@ -386,12 +547,113 @@ private fun SummaryRow(label: String, amount: Double?, bold: Boolean = false) {
             .padding(horizontal = 8.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text(
-            text = label,
-            fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal
-        )
+        Text(text = label, fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal)
         Text(
             text = if (amount != null) "₹${"%.2f".format(amount)}" else "—",
+            fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal
+        )
+    }
+}
+
+@Composable
+private fun SettlementRowWithButton(
+    label: String,
+    amount: Double,
+    isOwedToMe: Boolean,
+    settledThisMonth: Double = 0.0,
+    lastSettledBy: String? = null,
+    onSettleUp: () -> Unit
+) {
+    val color = if (isOwedToMe) Color(0xFF2E7D32) else Color(0xFFC62828)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = label, fontWeight = FontWeight.Bold, color = color, style = MaterialTheme.typography.bodyMedium)
+            Text(text = "₹${"%.2f".format(amount)}", fontWeight = FontWeight.Bold, color = color, style = MaterialTheme.typography.bodyMedium)
+            if (settledThisMonth > 0.01) {
+                Text(
+                    text = "Settled so far: ₹${"%.2f".format(settledThisMonth)}" +
+                        (lastSettledBy?.let { " · marked by $it" } ?: ""),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        OutlinedButton(
+            onClick = onSettleUp,
+            modifier = Modifier.padding(start = 8.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+        ) {
+            Text("Settle Up", style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+// Settlement row: green when someone owes me, red when I owe, neutral when settled
+@Composable
+private fun SettlementRow(label: String, amount: Double, isOwedToMe: Boolean?, settledThisMonth: Double = 0.0, lastSettledBy: String? = null) {
+    val color = when (isOwedToMe) {
+        true  -> Color(0xFF2E7D32)   // dark green — money coming to me
+        false -> Color(0xFFC62828)   // dark red   — money I owe
+        null  -> MaterialTheme.colorScheme.onSurface
+    }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(text = label, fontWeight = FontWeight.Bold, color = color)
+            Text(
+                text = if (isOwedToMe == null) "✓ Settled" else "₹${"%.2f".format(amount)}",
+                fontWeight = FontWeight.Bold,
+                color = color
+            )
+        }
+        if (settledThisMonth > 0.01) {
+            Text(
+                text = "Settled so far: ₹${"%.2f".format(settledThisMonth)}" +
+                    (lastSettledBy?.let { " · marked by $it" } ?: ""),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 8.dp)
+            )
+        }
+    }
+}
+
+// Full-width row with colored person name dot + label
+@Composable
+private fun ColoredPersonRow(label: String, amount: Double, color: Color, bold: Boolean = false) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.weight(1f)
+        ) {
+            Box(modifier = Modifier.size(8.dp).background(color, CircleShape))
+            Text(
+                text = label,
+                color = color,
+                fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+        Text(
+            text = "₹${"%.2f".format(amount)}",
+            color = color,
             fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal
         )
     }

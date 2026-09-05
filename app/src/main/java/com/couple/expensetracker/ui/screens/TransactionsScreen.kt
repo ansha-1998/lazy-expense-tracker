@@ -16,6 +16,7 @@ import androidx.compose.runtime.collectAsState
 import com.couple.expensetracker.data.db.entities.PartnerTransactionEntity
 import com.couple.expensetracker.data.db.entities.TransactionEntity
 import com.couple.expensetracker.ui.components.EditTransactionDialog
+import com.couple.expensetracker.ui.components.MonthPicker
 import com.couple.expensetracker.ui.components.TagBottomSheet
 import com.couple.expensetracker.ui.components.TransactionRow
 import com.couple.expensetracker.ui.viewmodel.SettingsViewModel
@@ -25,7 +26,7 @@ private fun PartnerTransactionEntity.toTransactionEntity() = TransactionEntity(
     id = id, date = date, amount = amount, paymentType = paymentType,
     bankName = bankName, last4OrRef = last4OrRef, tag = tag,
     addedBy = addedBy, source = source, lastModified = lastModified, syncStatus = syncStatus,
-    rawMessage = null
+    rawMessage = rawMessage, customSplits = customSplits
 )
 
 private val FILTERS = listOf("All", "Personal", "Combined", "Other")
@@ -39,12 +40,19 @@ fun TransactionsScreen(
     val myTransactions by viewModel.myTransactions.collectAsState()
     val partnerCombined by viewModel.partnerCombined.collectAsState()
     val selectedFilter by viewModel.selectedFilter.collectAsState()
+    val monthKey by viewModel.monthKey.collectAsState()
     val isSyncing by settingsViewModel.isSyncing.collectAsState()
     val isOnline by settingsViewModel.isOnline.collectAsState()
     val categories by settingsViewModel.categories.collectAsState()
+    val myUsername by settingsViewModel.myUsername.collectAsState()
+    val sharedUsernames by settingsViewModel.sharedUsernames.collectAsState()
+    val sharePercentages by settingsViewModel.sharePercentages.collectAsState()
+    val totalPersons = (1 + sharedUsernames.size).coerceAtLeast(1)
+    val viewerDefaultPct = sharePercentages["me"] ?: (100.0 / totalPersons)
     var selectedTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
     var editingTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
-    var combinedSubTab by remember { mutableStateOf(0) } // 0 = Me, 1 = Partner
+    var selectedSharedTransaction by remember { mutableStateOf<PartnerTransactionEntity?>(null) }
+    var combinedSubTab by remember { mutableStateOf(0) } // 0 = Me, 1 = Shared
 
     Scaffold(
         floatingActionButton = {
@@ -76,6 +84,12 @@ fun TransactionsScreen(
                     }
                 }
 
+                MonthPicker(
+                    currentMonthKey = monthKey,
+                    onPrevious = viewModel::goToPreviousMonth,
+                    onNext = viewModel::goToNextMonth
+                )
+
                 if (selectedFilter == "Combined") {
                     TabRow(selectedTabIndex = combinedSubTab) {
                         Tab(
@@ -86,7 +100,7 @@ fun TransactionsScreen(
                         Tab(
                             selected = combinedSubTab == 1,
                             onClick = { combinedSubTab = 1 },
-                            text = { Text("Partner") }
+                            text = { Text("Shared") }
                         )
                     }
                 }
@@ -97,7 +111,9 @@ fun TransactionsScreen(
                             items(myTransactions, key = { it.id }) { txn ->
                                 TransactionRow(
                                     transaction = txn,
-                                    onClick = { selectedTransaction = txn }
+                                    onClick = { selectedTransaction = txn },
+                                    viewerUsername = myUsername,
+                                    viewerDefaultPct = viewerDefaultPct
                                 )
                             }
                         } else {
@@ -110,7 +126,7 @@ fun TransactionsScreen(
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Text(
-                                            text = "No partner transactions",
+                                            text = "No shared transactions",
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
@@ -119,8 +135,11 @@ fun TransactionsScreen(
                                 items(partnerCombined, key = { "p_${it.id}" }) { txn ->
                                     TransactionRow(
                                         transaction = txn.toTransactionEntity(),
-                                        onClick = {},
-                                        isPartner = true
+                                        onClick = { selectedSharedTransaction = txn },
+                                        isShared = true,
+                                        sharedUsernames = sharedUsernames,
+                                        viewerUsername = myUsername,
+                                        viewerDefaultPct = viewerDefaultPct
                                     )
                                 }
                             }
@@ -129,7 +148,9 @@ fun TransactionsScreen(
                         items(myTransactions, key = { it.id }) { txn ->
                             TransactionRow(
                                 transaction = txn,
-                                onClick = { selectedTransaction = txn }
+                                onClick = { selectedTransaction = txn },
+                                viewerUsername = myUsername,
+                                viewerDefaultPct = viewerDefaultPct
                             )
                         }
                     }
@@ -157,6 +178,7 @@ fun TransactionsScreen(
         }
     }
 
+    // Bottom sheet for own transactions (full edit/tag/discard)
     selectedTransaction?.let { txn ->
         TagBottomSheet(
             onDismiss = { selectedTransaction = null },
@@ -168,12 +190,26 @@ fun TransactionsScreen(
         )
     }
 
+    // Read-only bottom sheet for shared person transactions (shows source message only)
+    selectedSharedTransaction?.let { txn ->
+        TagBottomSheet(
+            onDismiss = { selectedSharedTransaction = null },
+            onTag = {},
+            amountText = "₹${"%.2f".format(txn.amount)} · ${txn.bankName} · ${txn.addedBy}",
+            rawMessage = txn.rawMessage,
+            readOnly = true
+        )
+    }
+
     editingTransaction?.let { txn ->
         EditTransactionDialog(
             transaction = txn,
             categories = categories.sorted(),
-            onSave = { amount, bankName, category ->
-                viewModel.editTransaction(txn.id, amount, bankName, category)
+            sharedUsernames = sharedUsernames,
+            defaultPercentages = sharePercentages,
+            myUsername = myUsername,
+            onSave = { amount, bankName, category, customSplits ->
+                viewModel.editTransaction(txn.id, amount, bankName, category, customSplits)
                 editingTransaction = null
             },
             onDismiss = { editingTransaction = null }

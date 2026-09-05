@@ -23,6 +23,21 @@ interface TransactionDao {
     @Query("SELECT * FROM transactions WHERE tag = :tag AND addedBy = :addedBy ORDER BY date DESC")
     fun getByTag(tag: String, addedBy: String): Flow<List<TransactionEntity>>
 
+    @Query("""
+        SELECT * FROM transactions
+        WHERE strftime('%Y-%m', date / 1000, 'unixepoch') = :monthKey
+        AND addedBy = :addedBy ORDER BY date DESC
+    """)
+    fun getAllByMonth(monthKey: String, addedBy: String): Flow<List<TransactionEntity>>
+
+    @Query("""
+        SELECT * FROM transactions
+        WHERE tag = :tag
+        AND strftime('%Y-%m', date / 1000, 'unixepoch') = :monthKey
+        AND addedBy = :addedBy ORDER BY date DESC
+    """)
+    fun getByTagAndMonth(tag: String, monthKey: String, addedBy: String): Flow<List<TransactionEntity>>
+
     @Query("SELECT * FROM transactions WHERE id = :id")
     suspend fun getById(id: String): TransactionEntity?
 
@@ -80,6 +95,25 @@ interface TransactionDao {
         GROUP BY COALESCE(category, 'Uncategorized')
     """)
     suspend fun getAllTimeCategorySums(addedBy: String): List<CategorySum>
+
+    @Query("""
+        SELECT COALESCE(category, 'Uncategorized') as category, SUM(amount) as total
+        FROM transactions
+        WHERE strftime('%Y-%m', date / 1000, 'unixepoch') = :monthKey
+        AND addedBy = :addedBy
+        AND tag = :tag
+        GROUP BY COALESCE(category, 'Uncategorized')
+    """)
+    suspend fun getCategorySumsByTagForMonth(monthKey: String, addedBy: String, tag: String): List<CategorySum>
+
+    @Query("""
+        SELECT COALESCE(category, 'Uncategorized') as category, SUM(amount) as total
+        FROM transactions
+        WHERE addedBy = :addedBy
+        AND tag = :tag
+        GROUP BY COALESCE(category, 'Uncategorized')
+    """)
+    suspend fun getAllTimeCategorySumsByTag(addedBy: String, tag: String): List<CategorySum>
 
     @Query("""
         SELECT COUNT(*) FROM transactions

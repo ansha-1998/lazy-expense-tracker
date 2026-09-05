@@ -41,21 +41,19 @@ class SettingsViewModel @Inject constructor(
         const val DEFAULT_TEST_SMS =
             "Your ICICI Bank Credit Card ending 8000 has been debited for Rs. 179.00 on 09-May-26. If not done by you, call 1800-xxx-xxxx."
 
-        // Invisible Unicode code points that Android keyboards can silently insert
         private val INVISIBLE_CHARS = setOf(
-            0x200B, // zero-width space
-            0x200C, // zero-width non-joiner
-            0x200D, // zero-width joiner
-            0xFEFF, // byte-order mark / zero-width no-break space
-            0x00AD  // soft hyphen
+            0x200B, 0x200C, 0x200D, 0xFEFF, 0x00AD
         )
     }
 
     val myUsername: StateFlow<String> = prefs.myUsername
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
 
-    val partnerUsername: StateFlow<String> = prefs.partnerUsername
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+    val sharedUsernames: StateFlow<List<String>> = prefs.sharedUsernames
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val sharePercentages: StateFlow<Map<String, Double>> = prefs.sharePercentages
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
     val driveFolderId: StateFlow<String> = prefs.driveFolderId
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
@@ -84,8 +82,9 @@ class SettingsViewModel @Inject constructor(
     private val _reAuthIntent = MutableSharedFlow<Intent>()
     val reAuthIntent: SharedFlow<Intent> = _reAuthIntent
 
-    private val _isSyncing = MutableStateFlow(false)
-    val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
+    // Shared with the background SyncWorker via DriveSync, so the button reflects a sync
+    // regardless of whether it was triggered manually or by a background shared-transaction sync.
+    val isSyncing: StateFlow<Boolean> = driveSync.isSyncing
 
     private val _notificationAccessGranted = MutableStateFlow(false)
     val notificationAccessGranted: StateFlow<Boolean> = _notificationAccessGranted.asStateFlow()
@@ -112,10 +111,6 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { prefs.setMyUsername(value) }
     }
 
-    fun savePartnerUsername(value: String) {
-        viewModelScope.launch { prefs.setPartnerUsername(value) }
-    }
-
     fun saveDriveFolderId(value: String) {
         viewModelScope.launch { prefs.setDriveFolderId(extractFolderId(value)) }
     }
@@ -124,10 +119,64 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { prefs.setGoogleAccountEmail(email) }
     }
 
+    fun addSharedPerson(username: String) {
+        val trimmed = username
+            .filter { it.code !in INVISIBLE_CHARS }
+            .trim()
+            .lowercase()
+        if (trimmed.isBlank()) return
+        viewModelScope.launch {
+            val current = prefs.getSharedUsernamesOnce()
+            if (trimmed in current) return@launch
+            val updated = current + trimmed
+            prefs.setSharedUsernames(updated)
+            recalculateEqualPercentages(updated)
+        }
+    }
+
+    fun removeSharedPerson(username: String) {
+        viewModelScope.launch {
+            val current = prefs.getSharedUsernamesOnce()
+            val updated = current - username
+            prefs.setSharedUsernames(updated)
+            recalculateEqualPercentages(updated)
+        }
+    }
+
+    fun updateSharePercentage(username: String, pct: Double) {
+        viewModelScope.launch {
+            val current = prefs.getSharePercentagesOnce().toMutableMap()
+            current[username] = pct
+            prefs.setSharePercentages(current)
+        }
+    }
+
+    fun applyPresetSplit(myPct: Double, otherPct: Double) {
+        viewModelScope.launch {
+            val usernames = prefs.getSharedUsernamesOnce()
+            if (usernames.size != 1) return@launch
+            prefs.setSharePercentages(mapOf("me" to myPct, usernames[0] to otherPct))
+        }
+    }
+
+    fun applyEqualSplit() {
+        viewModelScope.launch {
+            recalculateEqualPercentages(prefs.getSharedUsernamesOnce())
+        }
+    }
+
+    private suspend fun recalculateEqualPercentages(sharedUsernames: List<String>) {
+        val totalPersons = 1 + sharedUsernames.size
+        val equalPct = if (totalPersons > 0) 100.0 / totalPersons else 100.0
+        val percentages = mutableMapOf("me" to equalPct)
+        sharedUsernames.forEach { percentages[it] = equalPct }
+        prefs.setSharePercentages(percentages)
+    }
+
     fun addFilterKeyword(word: String) {
         val trimmed = word
             .filter { it.code !in INVISIBLE_CHARS }
-            .replace(' ', ' ')  // non-breaking space → regular space
+            .replace(' ', ' ')
             .trim()
             .lowercase()
         if (trimmed.isBlank()) return
@@ -147,7 +196,7 @@ class SettingsViewModel @Inject constructor(
     fun addExclusionKeyword(word: String) {
         val trimmed = word
             .filter { it.code !in INVISIBLE_CHARS }
-            .replace(' ', ' ')
+            .replace(' ', ' ')
             .trim()
             .lowercase()
         if (trimmed.isBlank()) return
@@ -224,42 +273,39 @@ class SettingsViewModel @Inject constructor(
         triggerSync(manual = true)
     }
 
-    // Accepts either a full Drive share URL or a bare folder ID
     private fun extractFolderId(input: String): String {
         val match = Regex("folders/([a-zA-Z0-9_-]+)").find(input)
         return match?.groupValues?.get(1) ?: input.trim()
     }
 
     private fun triggerSync(manual: Boolean = false) {
-        if (_isSyncing.value) return
+        if (driveSync.isSyncing.value) {
+            if (manual) viewModelScope.launch { _syncMessage.emit("Sync already in progress") }
+            return
+        }
         viewModelScope.launch {
             val folderId = prefs.driveFolderId.first()
             val myUsername = prefs.myUsername.first()
-            val partnerUsername = prefs.partnerUsername.first()
+            val sharedUsernames = prefs.getSharedUsernamesOnce()
             val email = prefs.googleAccountEmail.first()
             if (folderId.isBlank() || myUsername.isBlank() || email.isBlank()) return@launch
 
-            _isSyncing.value = true
-            try {
-                val token = withContext(Dispatchers.IO) {
-                    try {
-                        GoogleAuthUtil.getToken(context, Account(email, "com.google"), DRIVE_SCOPE)
-                    } catch (e: UserRecoverableAuthException) {
-                        e.intent?.let { _reAuthIntent.emit(it) }
-                        ""
-                    } catch (e: Exception) { "" }
-                }
-                if (token.isBlank()) {
-                    if (manual) _syncMessage.emit("Drive permission needed — please re-sign in")
-                    return@launch
-                }
+            val token = withContext(Dispatchers.IO) {
+                try {
+                    GoogleAuthUtil.getToken(context, Account(email, "com.google"), DRIVE_SCOPE)
+                } catch (e: UserRecoverableAuthException) {
+                    e.intent?.let { _reAuthIntent.emit(it) }
+                    ""
+                } catch (e: Exception) { "" }
+            }
+            if (token.isBlank()) {
+                if (manual) _syncMessage.emit("Drive permission needed — please re-sign in")
+                return@launch
+            }
 
-                val success = driveSync.sync(token, folderId, myUsername, partnerUsername, fullSync = manual)
-                if (manual) {
-                    _syncMessage.emit(if (success) "Synced successfully" else "Sync failed. Will retry automatically.")
-                }
-            } finally {
-                _isSyncing.value = false
+            val success = driveSync.sync(token, folderId, myUsername, sharedUsernames, fullSync = manual)
+            if (manual) {
+                _syncMessage.emit(if (success) "Synced successfully" else "Sync failed. Will retry automatically.")
             }
         }
     }

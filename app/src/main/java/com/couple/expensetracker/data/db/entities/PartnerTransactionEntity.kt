@@ -15,5 +15,8 @@ data class PartnerTransactionEntity(
     val addedBy: String,
     val source: String,
     val lastModified: Long,
-    val syncStatus: String
+    val syncStatus: String,
+    val rawMessage: String? = null,
+    val customSplits: String? = null,
+    val category: String? = null
 )

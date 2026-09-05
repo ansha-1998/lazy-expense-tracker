@@ -35,10 +35,10 @@ class WidgetSyncCallback : ActionCallback {
 
         if (!connectivity.isConnected.value) return
 
-        val email        = prefs.googleAccountEmail.first().ifBlank { return }
-        val folderId     = prefs.driveFolderId.first().ifBlank { return }
-        val myUsername   = prefs.myUsername.first().ifBlank { return }
-        val partnerUsername = prefs.partnerUsername.first()
+        val email           = prefs.googleAccountEmail.first().ifBlank { return }
+        val folderId        = prefs.driveFolderId.first().ifBlank { return }
+        val myUsername      = prefs.myUsername.first().ifBlank { return }
+        val sharedUsernames = prefs.getSharedUsernamesOnce()
 
         val token = withContext(Dispatchers.IO) {
             try {
@@ -57,7 +57,7 @@ class WidgetSyncCallback : ActionCallback {
         }
         ExpenseWidget().update(context, glanceId)  // push loading state to screen before sync starts
         try {
-            driveSync.sync(token, folderId, myUsername, partnerUsername)
+            driveSync.sync(token, folderId, myUsername, sharedUsernames)
         } finally {
             updateAppWidgetState(context, PreferencesGlanceStateDefinition, glanceId) { p ->
                 p.toMutablePreferences().also { it[KEY_SYNCING] = false }

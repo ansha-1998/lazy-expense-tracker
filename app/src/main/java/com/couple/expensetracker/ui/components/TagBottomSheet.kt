@@ -16,7 +16,8 @@ fun TagBottomSheet(
     onDiscard: (() -> Unit)? = null,
     onEdit: (() -> Unit)? = null,
     amountText: String = "",
-    rawMessage: String? = null
+    rawMessage: String? = null,
+    readOnly: Boolean = false
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -32,15 +33,17 @@ fun TagBottomSheet(
                     modifier = Modifier.padding(bottom = 16.dp)
                 )
             }
-            Text(
-                text = "Tag as",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
-            TagButton(label = "Personal", onClick = { onTag("Personal"); onDismiss() })
-            TagButton(label = "Combined", onClick = { onTag("Combined"); onDismiss() })
-            TagButton(label = "Other", onClick = { onTag("Other"); onDismiss() })
+            if (!readOnly) {
+                Text(
+                    text = "Tag as",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+                TagButton(label = "Personal", onClick = { onTag("Personal"); onDismiss() })
+                TagButton(label = "Combined", onClick = { onTag("Combined"); onDismiss() })
+                TagButton(label = "Other", onClick = { onTag("Other"); onDismiss() })
+            }
             if (onEdit != null) {
                 Divider(modifier = Modifier.padding(vertical = 8.dp))
                 OutlinedButton(

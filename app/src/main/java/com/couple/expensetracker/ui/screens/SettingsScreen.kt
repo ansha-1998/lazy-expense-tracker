@@ -14,8 +14,12 @@ import androidx.compose.runtime.*
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.runtime.collectAsState
@@ -25,13 +29,20 @@ import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.Scope
 import kotlinx.coroutines.flow.collectLatest
+import kotlin.math.abs
+
+private val PERSON_COLORS = listOf(
+    Color(0xFF4CAF50), Color(0xFF2196F3), Color(0xFFFF9800),
+    Color(0xFFE91E63), Color(0xFF9C27B0), Color(0xFF00BCD4), Color(0xFFFF5722)
+)
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
     val context = LocalContext.current
     val myUsername by viewModel.myUsername.collectAsState()
-    val partnerUsername by viewModel.partnerUsername.collectAsState()
+    val sharedUsernames by viewModel.sharedUsernames.collectAsState()
+    val sharePercentages by viewModel.sharePercentages.collectAsState()
     val driveFolderId by viewModel.driveFolderId.collectAsState()
     val lastSynced by viewModel.lastSynced.collectAsState()
     val googleEmail by viewModel.googleEmail.collectAsState()
@@ -42,15 +53,14 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
     val categories by viewModel.categories.collectAsState()
     val notificationAccessGranted by viewModel.notificationAccessGranted.collectAsState()
 
-    // Check on first entry; user can tap Refresh after granting access
     LaunchedEffect(Unit) { viewModel.refreshNotificationAccess() }
 
     var myUsernameText by remember(myUsername) { mutableStateOf(myUsername) }
-    var partnerUsernameText by remember(partnerUsername) { mutableStateOf(partnerUsername) }
     var folderLinkText by remember(driveFolderId) { mutableStateOf(driveFolderId) }
     var newKeywordText by remember { mutableStateOf("") }
     var newExclusionKeywordText by remember { mutableStateOf("") }
     var newCategoryText by remember { mutableStateOf("") }
+    var newSharedPersonText by remember { mutableStateOf("") }
     var testSender by remember { mutableStateOf(SettingsViewModel.DEFAULT_TEST_SENDER) }
     var testMessage by remember { mutableStateOf(SettingsViewModel.DEFAULT_TEST_SMS) }
 
@@ -71,22 +81,16 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
             try {
                 val account = task.result
                 account.email?.let { viewModel.setGoogleEmail(it) }
-            } catch (e: Exception) {
-                // sign-in failed
-            }
+            } catch (e: Exception) { }
         }
     }
 
     LaunchedEffect(Unit) {
-        viewModel.syncMessage.collectLatest { msg ->
-            snackbarHostState.showSnackbar(msg)
-        }
+        viewModel.syncMessage.collectLatest { msg -> snackbarHostState.showSnackbar(msg) }
     }
 
     LaunchedEffect(Unit) {
-        viewModel.reAuthIntent.collectLatest { intent ->
-            signInLauncher.launch(intent)
-        }
+        viewModel.reAuthIntent.collectLatest { intent -> signInLauncher.launch(intent) }
     }
 
     Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
@@ -116,33 +120,206 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
                 }
             }
 
-            // Usernames
+            // My Username
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Usernames", style = MaterialTheme.typography.titleSmall)
+                    Text("My Username", style = MaterialTheme.typography.titleSmall)
                     OutlinedTextField(
                         value = myUsernameText,
                         onValueChange = { myUsernameText = it },
                         label = { Text("My Username") },
                         modifier = Modifier.fillMaxWidth()
                     )
-                    OutlinedTextField(
-                        value = partnerUsernameText,
-                        onValueChange = { partnerUsernameText = it },
-                        label = { Text("Partner Username") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
                     Button(
-                        onClick = {
-                            viewModel.saveMyUsername(myUsernameText)
-                            viewModel.savePartnerUsername(partnerUsernameText)
-                        },
+                        onClick = { viewModel.saveMyUsername(myUsernameText) },
                         modifier = Modifier.fillMaxWidth()
-                    ) { Text("Save Usernames") }
+                    ) { Text("Save") }
                 }
             }
 
-            // Filter Keywords
+            // Shared Persons
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Shared Persons", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "Add the usernames of people who share expenses with you. Their Drive files will be synced automatically.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (sharedUsernames.isEmpty()) {
+                        Text(
+                            "No shared persons added yet.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        sharedUsernames.forEachIndexed { index, username ->
+                            val dotColor = PERSON_COLORS[index % PERSON_COLORS.size]
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(10.dp)
+                                            .background(dotColor, CircleShape)
+                                    )
+                                    Text(
+                                        username,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = dotColor
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { viewModel.removeSharedPerson(username) },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Close,
+                                        contentDescription = "Remove $username",
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        OutlinedTextField(
+                            value = newSharedPersonText,
+                            onValueChange = { newSharedPersonText = it },
+                            label = { Text("Username") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                capitalization = KeyboardCapitalization.None,
+                                autoCorrect = false
+                            )
+                        )
+                        Button(
+                            onClick = {
+                                viewModel.addSharedPerson(newSharedPersonText)
+                                newSharedPersonText = ""
+                            },
+                            enabled = newSharedPersonText.isNotBlank()
+                        ) { Text("Add") }
+                    }
+                }
+            }
+
+            // Expense Split — shown only when there are shared persons
+            if (sharedUsernames.isNotEmpty()) {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Expense Split", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "Set how Combined expenses are split. Percentages must add up to 100%.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        // Preset buttons — only relevant for exactly 1 shared person
+                        if (sharedUsernames.size == 1) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                OutlinedButton(
+                                    onClick = { viewModel.applyEqualSplit() },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("Equal") }
+                                OutlinedButton(
+                                    onClick = { viewModel.applyPresetSplit(60.0, 40.0) },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("60 / 40") }
+                                OutlinedButton(
+                                    onClick = { viewModel.applyPresetSplit(70.0, 30.0) },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("70 / 30") }
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = { viewModel.applyEqualSplit() },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("Reset to Equal Split") }
+                        }
+
+                        Divider()
+
+                        // Per-person percentage rows
+                        val allPersons = listOf("me") + sharedUsernames
+                        allPersons.forEachIndexed { index, username ->
+                            val dotColor = if (username == "me") MaterialTheme.colorScheme.primary
+                                           else PERSON_COLORS[(index - 1) % PERSON_COLORS.size]
+                            val currentPct = sharePercentages[username] ?: 0.0
+                            var pctText by remember(currentPct) {
+                                mutableStateOf("%.1f".format(currentPct))
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    modifier = Modifier.weight(1f),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(10.dp)
+                                            .background(dotColor, CircleShape)
+                                    )
+                                    Text(
+                                        text = if (username == "me") "Me" else username,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = dotColor
+                                    )
+                                }
+                                OutlinedTextField(
+                                    value = pctText,
+                                    onValueChange = { v ->
+                                        pctText = v
+                                        v.toDoubleOrNull()?.let { viewModel.updateSharePercentage(username, it) }
+                                    },
+                                    modifier = Modifier.width(100.dp),
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                    suffix = { Text("%", style = MaterialTheme.typography.bodySmall) }
+                                )
+                            }
+                        }
+
+                        // Total indicator
+                        val totalPct = (listOf("me") + sharedUsernames)
+                            .sumOf { sharePercentages[it] ?: 0.0 }
+                        val isValid = abs(totalPct - 100.0) < 0.5
+                        Surface(
+                            color = if (isValid) Color(0xFF4CAF50).copy(alpha = 0.15f)
+                                    else MaterialTheme.colorScheme.errorContainer,
+                            shape = MaterialTheme.shapes.small
+                        ) {
+                            Text(
+                                text = "Total: ${"%.1f".format(totalPct)}%${if (!isValid) " ⚠ must equal 100%" else " ✓"}",
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (isValid) Color(0xFF4CAF50)
+                                        else MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
+                    }
+                }
+            }
+
+            // SMS Filter Keywords
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("SMS Filter Keywords", style = MaterialTheme.typography.titleSmall)
@@ -395,7 +572,7 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Google Drive Sync", style = MaterialTheme.typography.titleSmall)
                     Text(
-                        text = "Paste the link of your shared Drive folder. Both partners need editor access to the same folder.",
+                        text = "Paste the link of your shared Drive folder. All shared persons need editor access to the same folder.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

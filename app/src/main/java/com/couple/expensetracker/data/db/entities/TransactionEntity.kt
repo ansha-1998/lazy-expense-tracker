@@ -17,5 +17,6 @@ data class TransactionEntity(
     val lastModified: Long,
     val syncStatus: String,
     val rawMessage: String? = null,
-    val category: String? = null
+    val category: String? = null,
+    val customSplits: String? = null
 )

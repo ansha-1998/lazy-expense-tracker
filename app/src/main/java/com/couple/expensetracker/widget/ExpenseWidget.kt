@@ -439,7 +439,7 @@ private fun SummaryContent(
         ) {}
         Spacer(modifier = GlanceModifier.height(4.dp))
 
-        SummaryRow("Partner Combined", if (partnerSummary != null) partnerCombined else null)
+        SummaryRow("Shared Combined", if (partnerSummary != null) partnerCombined else null)
         SummaryRow("Each owes", eachOwes, bold = true)
 
         Spacer(modifier = GlanceModifier.defaultWeight())

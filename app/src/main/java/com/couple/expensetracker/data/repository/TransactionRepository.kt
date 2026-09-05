@@ -7,7 +7,13 @@ import com.couple.expensetracker.data.db.dao.TransactionDao
 import com.couple.expensetracker.data.db.entities.MonthlySummaryEntity
 import com.couple.expensetracker.data.db.entities.PartnerTransactionEntity
 import com.couple.expensetracker.data.db.entities.TransactionEntity
+import com.couple.expensetracker.data.sync.SyncWorker
 import com.couple.expensetracker.util.DateUtils
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.state.updateAppWidgetState
 import androidx.glance.state.PreferencesGlanceStateDefinition
@@ -44,6 +50,23 @@ class TransactionRepository @Inject constructor(
     )
     val autoSyncTrigger: SharedFlow<Unit> = _autoSyncTrigger.asSharedFlow()
 
+    // Lets other repositories (e.g. settlements) piggyback on the same debounced auto-sync
+    // instead of each needing their own trigger/scheduling mechanism.
+    fun triggerAutoSync() { _autoSyncTrigger.tryEmit(Unit) }
+
+    // A shared expense is the one thing the partner is actively waiting to see, so it skips the
+    // 60s debounce and runs as its own background task immediately (independent of any screen
+    // being open). Rapid successive shared additions collapse into a single sync via unique work
+    // + REPLACE — no need to run the whole thing once per transaction when one sync covers all of them.
+    private fun triggerInstantSyncIfShared(tag: String) {
+        if (tag != "Combined") return
+        val request = OneTimeWorkRequestBuilder<SyncWorker>()
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .build()
+        WorkManager.getInstance(context)
+            .enqueueUniqueWork(SyncWorker.UNIQUE_WORK_NAME, ExistingWorkPolicy.REPLACE, request)
+    }
+
     fun getUnclassified(addedBy: String): Flow<List<TransactionEntity>> =
         transactionDao.getByTag("Unclassified", addedBy)
 
@@ -52,6 +75,12 @@ class TransactionRepository @Inject constructor(
 
     fun getByTag(tag: String, addedBy: String): Flow<List<TransactionEntity>> =
         transactionDao.getByTag(tag, addedBy)
+
+    fun getAllByMonth(monthKey: String, addedBy: String): Flow<List<TransactionEntity>> =
+        transactionDao.getAllByMonth(monthKey, addedBy)
+
+    fun getByTagAndMonth(tag: String, monthKey: String, addedBy: String): Flow<List<TransactionEntity>> =
+        transactionDao.getByTagAndMonth(tag, monthKey, addedBy)
 
     suspend fun getById(id: String): TransactionEntity? = transactionDao.getById(id)
 
@@ -64,6 +93,7 @@ class TransactionRepository @Inject constructor(
         if (!inserted) return false
         recalculateSummary(DateUtils.toMonthKey(entity.date), entity.addedBy)
         _autoSyncTrigger.tryEmit(Unit)
+        triggerInstantSyncIfShared(entity.tag)
         widgetScope.launch {
             val ids = GlanceAppWidgetManager(context).getGlanceIds(ExpenseWidget::class.java)
             if (ids.isEmpty()) return@launch
@@ -95,6 +125,7 @@ class TransactionRepository @Inject constructor(
         transactionDao.updateTag(id, tag, System.currentTimeMillis())
         recalculateSummary(DateUtils.toMonthKey(entity.date), entity.addedBy)
         _autoSyncTrigger.tryEmit(Unit)
+        triggerInstantSyncIfShared(tag)
         refreshWidget()
     }
 
@@ -112,6 +143,7 @@ class TransactionRepository @Inject constructor(
         val entity = transactionDao.getById(id) ?: return
         transactionDao.deleteById(id)
         recalculateSummary(DateUtils.toMonthKey(entity.date), entity.addedBy)
+        _autoSyncTrigger.tryEmit(Unit)
         refreshWidget()
     }
 
@@ -134,8 +166,25 @@ class TransactionRepository @Inject constructor(
         transactionDao.getAllTimeCategorySums(addedBy)
             .associate { it.category to it.total }
 
+    suspend fun getCategoryBreakdownByTagForMonth(monthKey: String, addedBy: String, tag: String): Map<String, Double> =
+        transactionDao.getCategorySumsByTagForMonth(monthKey, addedBy, tag)
+            .associate { it.category to it.total }
+
+    suspend fun getAllTimeCategoryBreakdownByTag(addedBy: String, tag: String): Map<String, Double> =
+        transactionDao.getAllTimeCategorySumsByTag(addedBy, tag)
+            .associate { it.category to it.total }
+
     suspend fun getPartnerTransactionsForMonth(monthKey: String): List<PartnerTransactionEntity> =
         partnerTransactionDao.getByMonthOnce(monthKey)
+
+    suspend fun getCombinedPartnerTransactionsForMonth(monthKey: String, username: String): List<PartnerTransactionEntity> =
+        partnerTransactionDao.getCombinedByPersonAndMonthOnce(username, monthKey)
+
+    fun getCombinedPartnerTransactionsFlow(monthKey: String): Flow<List<PartnerTransactionEntity>> =
+        partnerTransactionDao.getCombinedByMonth(monthKey)
+
+    suspend fun getAllTimeCombinedPartnerTotal(username: String): Double =
+        partnerTransactionDao.getAllTimeCombinedTotalByPerson(username) ?: 0.0
 
     suspend fun purgeOldTransactions() {
         val cutoff = DateUtils.sixMonthsCutoff()

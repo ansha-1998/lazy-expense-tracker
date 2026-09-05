@@ -20,15 +20,19 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.runtime.collectAsState
+import androidx.compose.foundation.text.KeyboardOptions
 import com.couple.expensetracker.data.db.entities.TransactionEntity
 import com.couple.expensetracker.ui.components.EditTransactionDialog
 import com.couple.expensetracker.ui.components.TransactionRow
 import com.couple.expensetracker.ui.viewmodel.SettingsViewModel
 import com.couple.expensetracker.ui.viewmodel.UnclassifiedViewModel
 import com.couple.expensetracker.util.DateUtils
+import com.couple.expensetracker.util.SplitUtils
+import kotlin.math.abs
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,7 +41,10 @@ fun UnclassifiedScreen(
     settingsViewModel: SettingsViewModel = hiltViewModel()
 ) {
     val transactions by viewModel.transactions.collectAsState()
+    val myUsername by settingsViewModel.myUsername.collectAsState()
     val categories by settingsViewModel.categories.collectAsState()
+    val sharedUsernames by settingsViewModel.sharedUsernames.collectAsState()
+    val sharePercentages by settingsViewModel.sharePercentages.collectAsState()
 
     var selectedTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
     var editingTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
@@ -66,9 +73,12 @@ fun UnclassifiedScreen(
     selectedTransaction?.let { txn ->
         ClassifyBottomSheet(
             transaction = txn,
+            myUsername = myUsername,
             categories = categories.sorted(),
-            onSave = { tag, category ->
-                viewModel.classify(txn.id, tag, category)
+            sharedUsernames = sharedUsernames,
+            defaultPercentages = sharePercentages,
+            onSave = { tag, category, customSplits ->
+                viewModel.classify(txn.id, tag, category, customSplits)
                 selectedTransaction = null
             },
             onDiscard = {
@@ -87,8 +97,11 @@ fun UnclassifiedScreen(
         EditTransactionDialog(
             transaction = txn,
             categories = categories.sorted(),
-            onSave = { amount, bankName, category ->
-                viewModel.editTransaction(txn.id, amount, bankName, category)
+            sharedUsernames = sharedUsernames,
+            defaultPercentages = sharePercentages,
+            myUsername = myUsername,
+            onSave = { amount, bankName, category, customSplits ->
+                viewModel.editTransaction(txn.id, amount, bankName, category, customSplits)
                 editingTransaction = null
             },
             onDismiss = { editingTransaction = null }
@@ -113,15 +126,60 @@ fun UnclassifiedScreen(
 @Composable
 private fun ClassifyBottomSheet(
     transaction: TransactionEntity,
+    myUsername: String,
     categories: List<String>,
-    onSave: (tag: String, category: String?) -> Unit,
+    sharedUsernames: List<String>,
+    defaultPercentages: Map<String, Double>,
+    onSave: (tag: String, category: String?, customSplits: String?) -> Unit,
     onDiscard: () -> Unit,
     onEdit: () -> Unit,
     onDismiss: () -> Unit
 ) {
     var selectedTag by remember { mutableStateOf("Personal") }
     var selectedCategory by remember { mutableStateOf<String?>(null) }
+    var showCategorySection by remember { mutableStateOf(false) }
     val clipboardManager = LocalClipboardManager.current
+
+    val txnAmount = transaction.amount
+    val allPersons = remember(sharedUsernames) { listOf("me") + sharedUsernames }
+    val lastPerson = remember(allPersons) { allPersons.last() }
+    val editablePersons = remember(allPersons) { if (allPersons.size > 1) allPersons.dropLast(1) else allPersons }
+    val showSplitOption = sharedUsernames.isNotEmpty()
+
+    var showSplitSection by remember { mutableStateOf(false) }
+    var splitMode by remember { mutableStateOf("amount") }
+
+    val initialAmounts = remember(allPersons, defaultPercentages, txnAmount) {
+        val totalPersons = allPersons.size
+        val defaultEqualPct = if (totalPersons > 0) 100.0 / totalPersons else 100.0
+        allPersons.associateWith { p -> txnAmount * (defaultPercentages[p] ?: defaultEqualPct) / 100.0 }
+    }
+
+    val splitAmountTexts = remember(initialAmounts) {
+        mutableStateMapOf<String, String>().also { map ->
+            initialAmounts.forEach { (k, v) -> map[k] = "%.2f".format(v) }
+        }
+    }
+
+    val splitPctInputTexts = remember(initialAmounts, txnAmount, allPersons) {
+        mutableStateMapOf<String, String>().also { map ->
+            editablePersons.forEach { p ->
+                val pct = defaultPercentages[p] ?: (100.0 / allPersons.size)
+                map[p] = "%.1f".format(pct)
+            }
+        }
+    }
+
+    val recomputeLast: () -> Unit = {
+        if (allPersons.size >= 2) {
+            val othersSum = editablePersons.sumOf { splitAmountTexts[it]?.toDoubleOrNull() ?: 0.0 }
+            splitAmountTexts[lastPerson] = "%.2f".format(txnAmount - othersSum)
+        }
+    }
+
+    val splitSum = allPersons.sumOf { splitAmountTexts[it]?.toDoubleOrNull() ?: 0.0 }
+    val lastAmt = splitAmountTexts[lastPerson]?.toDoubleOrNull() ?: 0.0
+    val splitValid = abs(splitSum - txnAmount) < 0.02 && lastAmt >= -0.01
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -132,7 +190,7 @@ private fun ClassifyBottomSheet(
                 .padding(bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Action buttons at the top
+            // Action buttons
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -140,12 +198,20 @@ private fun ClassifyBottomSheet(
                 OutlinedButton(
                     onClick = onDiscard,
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error
-                    )
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
                 ) { Text("Discard") }
                 Button(
-                    onClick = { onSave(selectedTag, selectedCategory) },
+                    onClick = {
+                        val customSplits: String? = if (selectedTag == "Combined" && showSplitOption) {
+                            if (showSplitSection) {
+                                if (lastAmt < -0.01) return@Button
+                                SplitUtils.buildSplitsJson(myUsername, allPersons, splitAmountTexts, txnAmount)
+                            } else {
+                                SplitUtils.buildDefaultSplitsJson(myUsername, allPersons, defaultPercentages, txnAmount)
+                            }
+                        } else null
+                        onSave(selectedTag, selectedCategory, customSplits)
+                    },
                     modifier = Modifier.weight(1f)
                 ) { Text("Save") }
             }
@@ -195,39 +261,270 @@ private fun ClassifyBottomSheet(
             }
 
             // Edit amount / bank
-            OutlinedButton(
-                onClick = onEdit,
-                modifier = Modifier.fillMaxWidth()
-            ) {
+            OutlinedButton(onClick = onEdit, modifier = Modifier.fillMaxWidth()) {
                 Text("Edit Amount / Bank")
             }
 
-            // Category selection — inline to avoid popup clipping
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "Category (optional)",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                        CategoryRadioRow(
-                            label = "None",
-                            selected = selectedCategory == null,
-                            onClick = { selectedCategory = null }
-                        )
-                        categories.forEach { cat ->
-                            CategoryRadioRow(
-                                label = cat,
-                                selected = selectedCategory == cat,
-                                onClick = { selectedCategory = cat }
+            // Category — collapsible dropdown
+            OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showCategorySection = !showCategorySection },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "Category (optional)",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            if (selectedCategory != null) {
+                                Text(
+                                    text = selectedCategory!!,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                        Text(
+                            text = if (showCategorySection) "▲" else "▼",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    if (showCategorySection) {
+                        Spacer(Modifier.height(4.dp))
+                        HorizontalDivider()
+                        CategoryRadioRow(label = "None", selected = selectedCategory == null, onClick = { selectedCategory = null })
+                        categories.forEach { cat ->
+                            CategoryRadioRow(label = cat, selected = selectedCategory == cat, onClick = { selectedCategory = cat })
                         }
                     }
                 }
             }
 
-            // Source message — shown by default, long-press to copy
+            // Custom split — only when Combined + shared persons exist
+            if (selectedTag == "Combined" && showSplitOption) {
+                OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showSplitSection = !showSplitSection
+                                    if (showSplitSection) recomputeLast()
+                                },
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Custom Split (optional)",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = if (showSplitSection) "▲ Hide" else "▼ Show",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
+                        if (showSplitSection) {
+                            Spacer(Modifier.height(8.dp))
+
+                            // Mode toggle
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                FilterChip(
+                                    selected = splitMode == "amount",
+                                    onClick = { splitMode = "amount" },
+                                    label = { Text("₹ Amount") }
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                FilterChip(
+                                    selected = splitMode == "pct",
+                                    onClick = {
+                                        if (splitMode == "amount") {
+                                            editablePersons.forEach { p ->
+                                                val amt = splitAmountTexts[p]?.toDoubleOrNull() ?: 0.0
+                                                val pct = if (txnAmount > 0) amt / txnAmount * 100.0 else 100.0 / allPersons.size
+                                                splitPctInputTexts[p] = "%.1f".format(pct)
+                                            }
+                                        }
+                                        splitMode = "pct"
+                                    },
+                                    label = { Text("% Split") }
+                                )
+                            }
+
+                            Spacer(Modifier.height(4.dp))
+
+                            allPersons.forEach { person ->
+                                val isLast = person == lastPerson
+                                val amtStr = splitAmountTexts[person] ?: "0.00"
+                                val amt = amtStr.toDoubleOrNull() ?: 0.0
+                                val pct = if (txnAmount > 0) amt / txnAmount * 100.0 else 0.0
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = if (person == "me") "Me" else person,
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                        if (isLast) {
+                                            Text(
+                                                text = "auto",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+
+                                    if (splitMode == "amount") {
+                                        if (!isLast) {
+                                            OutlinedTextField(
+                                                value = amtStr,
+                                                onValueChange = { v ->
+                                                    splitAmountTexts[person] = v
+                                                    recomputeLast()
+                                                },
+                                                modifier = Modifier.width(90.dp),
+                                                singleLine = true,
+                                                textStyle = MaterialTheme.typography.bodySmall,
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                prefix = { Text("₹", style = MaterialTheme.typography.bodySmall) }
+                                            )
+                                        } else {
+                                            Surface(
+                                                modifier = Modifier.width(90.dp).height(48.dp),
+                                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                                                shape = MaterialTheme.shapes.small
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Text(
+                                                        text = "₹${"%.2f".format(amt)}",
+                                                        style = MaterialTheme.typography.bodySmall
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Spacer(Modifier.width(4.dp))
+                                        Surface(
+                                            modifier = Modifier.width(52.dp).height(48.dp),
+                                            color = MaterialTheme.colorScheme.surfaceVariant,
+                                            shape = MaterialTheme.shapes.small
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text(
+                                                    text = "${"%.0f".format(pct)}%",
+                                                    style = MaterialTheme.typography.bodySmall
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        val pctInputStr = if (!isLast) splitPctInputTexts[person] ?: "0.0"
+                                                          else "%.1f".format(pct)
+                                        if (!isLast) {
+                                            OutlinedTextField(
+                                                value = pctInputStr,
+                                                onValueChange = { v ->
+                                                    splitPctInputTexts[person] = v
+                                                    val p = v.toDoubleOrNull() ?: 0.0
+                                                    splitAmountTexts[person] = "%.2f".format(txnAmount * p / 100.0)
+                                                    recomputeLast()
+                                                },
+                                                modifier = Modifier.width(80.dp),
+                                                singleLine = true,
+                                                textStyle = MaterialTheme.typography.bodySmall,
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                suffix = { Text("%", style = MaterialTheme.typography.bodySmall) }
+                                            )
+                                        } else {
+                                            Surface(
+                                                modifier = Modifier.width(80.dp).height(48.dp),
+                                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                                                shape = MaterialTheme.shapes.small
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Text(
+                                                        text = "${"%.1f".format(pct)}%",
+                                                        style = MaterialTheme.typography.bodySmall
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Spacer(Modifier.width(4.dp))
+                                        Surface(
+                                            modifier = Modifier.width(72.dp).height(48.dp),
+                                            color = MaterialTheme.colorScheme.surfaceVariant,
+                                            shape = MaterialTheme.shapes.small
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text(
+                                                    text = "₹${"%.0f".format(amt)}",
+                                                    style = MaterialTheme.typography.bodySmall
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Spacer(Modifier.height(4.dp))
+
+                            Surface(
+                                color = if (splitValid) Color(0xFF4CAF50).copy(alpha = 0.12f)
+                                        else MaterialTheme.colorScheme.errorContainer,
+                                shape = MaterialTheme.shapes.small,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = if (!splitValid && lastAmt < -0.01)
+                                               "⚠ ${if (lastPerson == "me") "Me" else lastPerson} goes negative — reduce others"
+                                           else
+                                               "Total: ₹${"%.2f".format(splitSum)} / ₹${"%.2f".format(txnAmount)}" +
+                                                   if (splitValid) " ✓" else " ⚠ must match",
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (splitValid) Color(0xFF4CAF50)
+                                            else MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+
+                            Spacer(Modifier.height(4.dp))
+
+                            TextButton(
+                                onClick = {
+                                    val totalPersons = allPersons.size
+                                    val defaultEqualPct = if (totalPersons > 0) 100.0 / totalPersons else 100.0
+                                    editablePersons.forEach { p ->
+                                        val pct2 = defaultPercentages[p] ?: defaultEqualPct
+                                        splitAmountTexts[p] = "%.2f".format(txnAmount * pct2 / 100.0)
+                                        splitPctInputTexts[p] = "%.1f".format(pct2)
+                                    }
+                                    recomputeLast()
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Reset to Default Split")
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Source message
             if (!transaction.rawMessage.isNullOrBlank()) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(
@@ -251,13 +548,9 @@ private fun ClassifyBottomSheet(
                             .fillMaxWidth()
                             .combinedClickable(
                                 onClick = {},
-                                onLongClick = {
-                                    clipboardManager.setText(AnnotatedString(transaction.rawMessage))
-                                }
+                                onLongClick = { clipboardManager.setText(AnnotatedString(transaction.rawMessage)) }
                             ),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant
-                        )
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                     ) {
                         Text(
                             text = transaction.rawMessage,
@@ -354,9 +647,7 @@ fun DiscardAlertDialog(
         confirmButton = {
             TextButton(
                 onClick = onConfirm,
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = MaterialTheme.colorScheme.error
-                )
+                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
             ) { Text("Remove") }
         },
         dismissButton = {

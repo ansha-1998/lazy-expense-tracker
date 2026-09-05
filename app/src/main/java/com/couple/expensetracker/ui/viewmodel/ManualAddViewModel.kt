@@ -20,8 +20,17 @@ class ManualAddViewModel @Inject constructor(
     private val prefs: AppPreferences
 ) : ViewModel() {
 
+    val myUsername: StateFlow<String> = prefs.myUsername
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+
     val categories: StateFlow<Set<String>> = prefs.categories
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AppPreferences.DEFAULT_CATEGORIES)
+
+    val sharedUsernames: StateFlow<List<String>> = prefs.sharedUsernames
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val sharePercentages: StateFlow<Map<String, Double>> = prefs.sharePercentages
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
     fun saveTransaction(
         date: Long,
@@ -31,6 +40,7 @@ class ManualAddViewModel @Inject constructor(
         last4OrRef: String,
         tag: String,
         category: String?,
+        customSplits: String? = null,
         onSuccess: () -> Unit
     ) {
         viewModelScope.launch {
@@ -47,7 +57,8 @@ class ManualAddViewModel @Inject constructor(
                 source = "Manual",
                 lastModified = System.currentTimeMillis(),
                 syncStatus = "PENDING",
-                category = category
+                category = category,
+                customSplits = customSplits
             )
             repository.addTransaction(txn)
             onSuccess()

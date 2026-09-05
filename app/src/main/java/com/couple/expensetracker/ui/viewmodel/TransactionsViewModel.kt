@@ -7,6 +7,7 @@ import com.couple.expensetracker.data.db.entities.TransactionEntity
 import com.couple.expensetracker.data.db.dao.PartnerTransactionDao
 import com.couple.expensetracker.data.preferences.AppPreferences
 import com.couple.expensetracker.data.repository.TransactionRepository
+import com.couple.expensetracker.util.DateUtils
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -22,24 +23,40 @@ class TransactionsViewModel @Inject constructor(
     private val _selectedFilter = MutableStateFlow("All")
     val selectedFilter: StateFlow<String> = _selectedFilter
 
+    private val _monthKey = MutableStateFlow(DateUtils.currentMonthKey())
+    val monthKey: StateFlow<String> = _monthKey
+
     val myTransactions: StateFlow<List<TransactionEntity>> = combine(
         prefs.myUsername,
-        _selectedFilter
-    ) { username, filter -> Pair(username.ifBlank { "me" }, filter) }
-        .flatMapLatest { (addedBy, filter) ->
-            if (filter == "All") repository.getAll(addedBy)
-            else repository.getByTag(filter, addedBy)
+        _selectedFilter,
+        _monthKey
+    ) { username, filter, month -> Triple(username.ifBlank { "me" }, filter, month) }
+        .flatMapLatest { (addedBy, filter, month) ->
+            if (filter == "All") repository.getAllByMonth(month, addedBy)
+            else repository.getByTagAndMonth(filter, month, addedBy)
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val partnerCombined: StateFlow<List<PartnerTransactionEntity>> = _selectedFilter
-        .flatMapLatest { filter ->
-            if (filter == "Combined") partnerTransactionDao.getCombined()
+    val partnerCombined: StateFlow<List<PartnerTransactionEntity>> = combine(
+        _selectedFilter,
+        _monthKey
+    ) { filter, month -> Pair(filter, month) }
+        .flatMapLatest { (filter, month) ->
+            if (filter == "Combined") partnerTransactionDao.getCombinedByMonth(month)
             else flowOf(emptyList())
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     fun setFilter(filter: String) { _selectedFilter.value = filter }
+
+    fun goToPreviousMonth() {
+        _monthKey.value = DateUtils.previousMonth(_monthKey.value)
+    }
+
+    fun goToNextMonth() {
+        val next = DateUtils.nextMonth(_monthKey.value)
+        if (next <= DateUtils.currentMonthKey()) _monthKey.value = next
+    }
 
     fun updateTag(id: String, tag: String) {
         viewModelScope.launch { repository.updateTag(id, tag) }
@@ -49,10 +66,17 @@ class TransactionsViewModel @Inject constructor(
         viewModelScope.launch { repository.discardTransaction(id) }
     }
 
-    fun editTransaction(id: String, amount: Double, bankName: String, category: String?) {
+    fun editTransaction(id: String, amount: Double, bankName: String, category: String?, customSplits: String?) {
         viewModelScope.launch {
             val entity = repository.getById(id) ?: return@launch
-            repository.editTransaction(entity.copy(amount = amount, bankName = bankName, category = category, lastModified = System.currentTimeMillis(), syncStatus = "PENDING"))
+            repository.editTransaction(entity.copy(
+                amount = amount,
+                bankName = bankName,
+                category = category,
+                customSplits = customSplits,
+                lastModified = System.currentTimeMillis(),
+                syncStatus = "PENDING"
+            ))
         }
     }
 }

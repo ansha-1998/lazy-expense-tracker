@@ -1,18 +1,30 @@
 package com.couple.expensetracker.ui.screens
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.runtime.collectAsState
 import com.couple.expensetracker.ui.viewmodel.ManualAddViewModel
+import com.couple.expensetracker.util.SplitUtils
 import java.util.*
+import kotlin.math.abs
+
+private val PERSON_COLORS = listOf(
+    Color(0xFF4CAF50), Color(0xFF2196F3), Color(0xFFFF9800),
+    Color(0xFFE91E63), Color(0xFF9C27B0), Color(0xFF00BCD4), Color(0xFFFF5722)
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -20,7 +32,10 @@ fun ManualAddScreen(
     onNavigateBack: () -> Unit,
     viewModel: ManualAddViewModel = hiltViewModel()
 ) {
+    val myUsername by viewModel.myUsername.collectAsState()
     val categories by viewModel.categories.collectAsState()
+    val sharedUsernames by viewModel.sharedUsernames.collectAsState()
+    val defaultPercentages by viewModel.sharePercentages.collectAsState()
 
     var date by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var amountText by remember { mutableStateOf("") }
@@ -37,6 +52,84 @@ fun ManualAddScreen(
     var showTagDropdown by remember { mutableStateOf(false) }
     var showCategoryDropdown by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
+
+    // Split state
+    val txnAmount = amountText.toDoubleOrNull() ?: 0.0
+    val allPersons = remember(sharedUsernames) { listOf("me") + sharedUsernames }
+    val lastPerson = remember(allPersons) { allPersons.last() }
+    val editablePersons = remember(allPersons) { if (allPersons.size > 1) allPersons.dropLast(1) else allPersons }
+    val showSplitOption = tag == "Combined" && sharedUsernames.isNotEmpty()
+
+    var showSplitSection by remember { mutableStateOf(false) }
+    var splitMode by remember { mutableStateOf("amount") }
+
+    val splitAmountTexts = remember(allPersons, defaultPercentages) {
+        val totalPersons = allPersons.size
+        val defaultEqualPct = if (totalPersons > 0) 100.0 / totalPersons else 100.0
+        mutableStateMapOf<String, String>().also { map ->
+            allPersons.forEach { p ->
+                val pct = defaultPercentages[p] ?: defaultEqualPct
+                map[p] = "%.2f".format(txnAmount * pct / 100.0)
+            }
+        }
+    }
+
+    val splitPctInputTexts = remember(allPersons, defaultPercentages) {
+        val totalPersons = allPersons.size
+        val defaultEqualPct = if (totalPersons > 0) 100.0 / totalPersons else 100.0
+        mutableStateMapOf<String, String>().also { map ->
+            editablePersons.forEach { p ->
+                map[p] = "%.1f".format(defaultPercentages[p] ?: defaultEqualPct)
+            }
+        }
+    }
+
+    val recomputeLast: () -> Unit = {
+        if (allPersons.size >= 2) {
+            val othersSum = editablePersons.sumOf { splitAmountTexts[it]?.toDoubleOrNull() ?: 0.0 }
+            splitAmountTexts[lastPerson] = "%.2f".format(txnAmount - othersSum)
+        }
+    }
+
+    // When split section first opens, initialize amounts if they're all still zero
+    LaunchedEffect(showSplitSection) {
+        if (!showSplitSection || txnAmount <= 0.0) return@LaunchedEffect
+        val currentTotal = allPersons.sumOf { splitAmountTexts[it]?.toDoubleOrNull() ?: 0.0 }
+        if (currentTotal < 0.01) {
+            val totalPersons = allPersons.size
+            val defaultEqualPct = if (totalPersons > 0) 100.0 / totalPersons else 100.0
+            editablePersons.forEach { p ->
+                val pct = defaultPercentages[p] ?: defaultEqualPct
+                splitAmountTexts[p] = "%.2f".format(txnAmount * pct / 100.0)
+            }
+            recomputeLast()
+        }
+    }
+
+    // When amount changes, scale editable persons proportionally and recompute last
+    LaunchedEffect(txnAmount) {
+        if (!showSplitSection || txnAmount <= 0.0) return@LaunchedEffect
+        val prevTotal = allPersons.sumOf { splitAmountTexts[it]?.toDoubleOrNull() ?: 0.0 }
+        if (prevTotal > 0.0) {
+            editablePersons.forEach { p ->
+                val current = splitAmountTexts[p]?.toDoubleOrNull() ?: 0.0
+                splitAmountTexts[p] = "%.2f".format(current / prevTotal * txnAmount)
+            }
+        } else {
+            // first time: distribute by default percentages
+            val totalPersons = allPersons.size
+            val defaultEqualPct = if (totalPersons > 0) 100.0 / totalPersons else 100.0
+            editablePersons.forEach { p ->
+                val pct = defaultPercentages[p] ?: defaultEqualPct
+                splitAmountTexts[p] = "%.2f".format(txnAmount * pct / 100.0)
+            }
+        }
+        recomputeLast()
+    }
+
+    val splitSum = allPersons.sumOf { splitAmountTexts[it]?.toDoubleOrNull() ?: 0.0 }
+    val lastAmt = splitAmountTexts[lastPerson]?.toDoubleOrNull() ?: 0.0
+    val splitValid = abs(splitSum - txnAmount) < 0.02 && lastAmt >= -0.01
 
     val datePickerState = rememberDatePickerState(initialSelectedDateMillis = date)
 
@@ -158,6 +251,237 @@ fun ManualAddScreen(
                 }
             }
 
+            // Custom split — shown when tag == Combined and shared persons exist
+            if (showSplitOption) {
+                OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showSplitSection = !showSplitSection
+                                    if (showSplitSection) recomputeLast()
+                                },
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Custom Split (optional)",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = if (showSplitSection) "▲ Hide" else "▼ Show",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
+                        if (showSplitSection) {
+                            Spacer(Modifier.height(8.dp))
+
+                            // Mode toggle
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                FilterChip(
+                                    selected = splitMode == "amount",
+                                    onClick = { splitMode = "amount" },
+                                    label = { Text("₹ Amount") }
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                FilterChip(
+                                    selected = splitMode == "pct",
+                                    onClick = {
+                                        if (splitMode == "amount") {
+                                            editablePersons.forEach { p ->
+                                                val amt = splitAmountTexts[p]?.toDoubleOrNull() ?: 0.0
+                                                val pct = if (txnAmount > 0) amt / txnAmount * 100.0 else 100.0 / allPersons.size
+                                                splitPctInputTexts[p] = "%.1f".format(pct)
+                                            }
+                                        }
+                                        splitMode = "pct"
+                                    },
+                                    label = { Text("% Split") }
+                                )
+                            }
+
+                            Spacer(Modifier.height(4.dp))
+
+                            allPersons.forEachIndexed { idx, person ->
+                                val isLast = person == lastPerson
+                                val personColor = if (person == "me") MaterialTheme.colorScheme.primary
+                                                  else PERSON_COLORS[(idx - 1) % PERSON_COLORS.size]
+                                val amtStr = splitAmountTexts[person] ?: "0.00"
+                                val amt = amtStr.toDoubleOrNull() ?: 0.0
+                                val pct = if (txnAmount > 0) amt / txnAmount * 100.0 else 0.0
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(8.dp)
+                                                    .background(personColor, CircleShape)
+                                            )
+                                            Text(
+                                                text = if (person == "me") "Me" else person,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = personColor
+                                            )
+                                        }
+                                        if (isLast) {
+                                            Text(
+                                                text = "auto",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+
+                                    if (splitMode == "amount") {
+                                        if (!isLast) {
+                                            OutlinedTextField(
+                                                value = amtStr,
+                                                onValueChange = { v ->
+                                                    splitAmountTexts[person] = v
+                                                    recomputeLast()
+                                                },
+                                                modifier = Modifier.width(90.dp),
+                                                singleLine = true,
+                                                textStyle = MaterialTheme.typography.bodySmall,
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                prefix = { Text("₹", style = MaterialTheme.typography.bodySmall) }
+                                            )
+                                        } else {
+                                            Surface(
+                                                modifier = Modifier.width(90.dp).height(48.dp),
+                                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                                                shape = MaterialTheme.shapes.small
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Text(
+                                                        text = "₹${"%.2f".format(amt)}",
+                                                        style = MaterialTheme.typography.bodySmall
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Spacer(Modifier.width(4.dp))
+                                        Surface(
+                                            modifier = Modifier.width(52.dp).height(48.dp),
+                                            color = MaterialTheme.colorScheme.surfaceVariant,
+                                            shape = MaterialTheme.shapes.small
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text(
+                                                    text = "${"%.0f".format(pct)}%",
+                                                    style = MaterialTheme.typography.bodySmall
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        val pctInputStr = if (!isLast) splitPctInputTexts[person] ?: "0.0"
+                                                          else "%.1f".format(pct)
+                                        if (!isLast) {
+                                            OutlinedTextField(
+                                                value = pctInputStr,
+                                                onValueChange = { v ->
+                                                    splitPctInputTexts[person] = v
+                                                    val p = v.toDoubleOrNull() ?: 0.0
+                                                    splitAmountTexts[person] = "%.2f".format(txnAmount * p / 100.0)
+                                                    recomputeLast()
+                                                },
+                                                modifier = Modifier.width(80.dp),
+                                                singleLine = true,
+                                                textStyle = MaterialTheme.typography.bodySmall,
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                suffix = { Text("%", style = MaterialTheme.typography.bodySmall) }
+                                            )
+                                        } else {
+                                            Surface(
+                                                modifier = Modifier.width(80.dp).height(48.dp),
+                                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                                                shape = MaterialTheme.shapes.small
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Text(
+                                                        text = "${"%.1f".format(pct)}%",
+                                                        style = MaterialTheme.typography.bodySmall
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Spacer(Modifier.width(4.dp))
+                                        Surface(
+                                            modifier = Modifier.width(72.dp).height(48.dp),
+                                            color = MaterialTheme.colorScheme.surfaceVariant,
+                                            shape = MaterialTheme.shapes.small
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text(
+                                                    text = "₹${"%.0f".format(amt)}",
+                                                    style = MaterialTheme.typography.bodySmall
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Spacer(Modifier.height(4.dp))
+
+                            Surface(
+                                color = if (splitValid) Color(0xFF4CAF50).copy(alpha = 0.12f)
+                                        else MaterialTheme.colorScheme.errorContainer,
+                                shape = MaterialTheme.shapes.small,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = if (!splitValid && lastAmt < -0.01)
+                                               "⚠ ${if (lastPerson == "me") "Me" else lastPerson} goes negative — reduce others"
+                                           else
+                                               "Total: ₹${"%.2f".format(splitSum)} / ₹${"%.2f".format(txnAmount)}" +
+                                                   if (splitValid) " ✓" else " ⚠ must match",
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (splitValid) Color(0xFF4CAF50)
+                                            else MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+
+                            Spacer(Modifier.height(4.dp))
+
+                            TextButton(
+                                onClick = {
+                                    val totalPersons = allPersons.size
+                                    val defaultEqualPct = if (totalPersons > 0) 100.0 / totalPersons else 100.0
+                                    editablePersons.forEach { p ->
+                                        val pct2 = defaultPercentages[p] ?: defaultEqualPct
+                                        splitAmountTexts[p] = "%.2f".format(txnAmount * pct2 / 100.0)
+                                        splitPctInputTexts[p] = "%.1f".format(pct2)
+                                    }
+                                    recomputeLast()
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Reset to Default Split")
+                            }
+                        }
+                    }
+                }
+            }
+
             ExposedDropdownMenuBox(
                 expanded = showCategoryDropdown,
                 onExpandedChange = { showCategoryDropdown = it }
@@ -192,6 +516,16 @@ fun ManualAddScreen(
                     val amount = amountText.toDoubleOrNull()
                     if (amount == null || amount <= 0) { amountError = true; return@Button }
                     if (bankName.isBlank()) { bankError = true; return@Button }
+
+                    val customSplits: String? = if (showSplitOption) {
+                        if (showSplitSection) {
+                            if (lastAmt < -0.01) return@Button
+                            SplitUtils.buildSplitsJson(myUsername, allPersons, splitAmountTexts, amount)
+                        } else {
+                            SplitUtils.buildDefaultSplitsJson(myUsername, allPersons, defaultPercentages, amount)
+                        }
+                    } else null
+
                     viewModel.saveTransaction(
                         date = date,
                         amount = amount,
@@ -200,6 +534,7 @@ fun ManualAddScreen(
                         last4OrRef = last4OrRef,
                         tag = tag,
                         category = category,
+                        customSplits = customSplits,
                         onSuccess = onNavigateBack
                     )
                 },

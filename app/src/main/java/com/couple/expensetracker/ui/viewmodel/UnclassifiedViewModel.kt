@@ -23,13 +23,14 @@ class UnclassifiedViewModel @Inject constructor(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    fun classify(id: String, tag: String, category: String?) {
+    fun classify(id: String, tag: String, category: String?, customSplits: String? = null) {
         viewModelScope.launch {
             val entity = repository.getById(id) ?: return@launch
             repository.editTransaction(
                 entity.copy(
                     tag = tag,
                     category = category,
+                    customSplits = customSplits,
                     lastModified = System.currentTimeMillis(),
                     syncStatus = "PENDING"
                 )
@@ -37,7 +38,7 @@ class UnclassifiedViewModel @Inject constructor(
         }
     }
 
-    fun editTransaction(id: String, amount: Double, bankName: String, category: String?) {
+    fun editTransaction(id: String, amount: Double, bankName: String, category: String?, customSplits: String?) {
         viewModelScope.launch {
             val entity = repository.getById(id) ?: return@launch
             repository.editTransaction(
@@ -45,6 +46,7 @@ class UnclassifiedViewModel @Inject constructor(
                     amount = amount,
                     bankName = bankName,
                     category = category,
+                    customSplits = customSplits,
                     lastModified = System.currentTimeMillis(),
                     syncStatus = "PENDING"
                 )

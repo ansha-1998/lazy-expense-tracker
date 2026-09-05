@@ -51,4 +51,22 @@ abstract class PartnerTransactionDao {
 
     @Query("SELECT MAX(lastModified) FROM partner_transactions WHERE addedBy = :addedBy")
     abstract suspend fun getMaxLastModified(addedBy: String): Long?
+
+    @Query("""
+        SELECT * FROM partner_transactions
+        WHERE addedBy = :addedBy AND tag = 'Combined'
+        AND strftime('%Y-%m', date / 1000, 'unixepoch') = :monthKey
+        ORDER BY date DESC
+    """)
+    abstract suspend fun getCombinedByPersonAndMonthOnce(addedBy: String, monthKey: String): List<PartnerTransactionEntity>
+
+    @Query("SELECT SUM(amount) FROM partner_transactions WHERE addedBy = :addedBy AND tag = 'Combined'")
+    abstract suspend fun getAllTimeCombinedTotalByPerson(addedBy: String): Double?
+
+    @Query("""
+        SELECT SUM(amount) FROM partner_transactions
+        WHERE addedBy = :addedBy AND tag = 'Combined'
+        AND strftime('%Y-%m', date / 1000, 'unixepoch') = :monthKey
+    """)
+    abstract fun getCombinedTotalByPersonAndMonth(addedBy: String, monthKey: String): Flow<Double?>
 }

@@ -19,6 +19,8 @@ class AppPreferences @Inject constructor(@ApplicationContext private val context
     companion object {
         val KEY_MY_USERNAME = stringPreferencesKey("my_username")
         val KEY_PARTNER_USERNAME = stringPreferencesKey("partner_username")
+        val KEY_SHARED_USERNAMES = stringPreferencesKey("shared_usernames")
+        val KEY_SHARE_PERCENTAGES = stringPreferencesKey("share_percentages")
         val KEY_DRIVE_FOLDER_ID = stringPreferencesKey("drive_folder_id")
         val KEY_LAST_SYNCED = longPreferencesKey("last_synced")
         val KEY_GOOGLE_ACCOUNT_EMAIL = stringPreferencesKey("google_account_email")
@@ -52,6 +54,31 @@ class AppPreferences @Inject constructor(@ApplicationContext private val context
     val driveFolderId: Flow<String> = context.dataStore.data.map { it[KEY_DRIVE_FOLDER_ID] ?: "" }
     val lastSynced: Flow<Long> = context.dataStore.data.map { it[KEY_LAST_SYNCED] ?: 0L }
     val googleAccountEmail: Flow<String> = context.dataStore.data.map { it[KEY_GOOGLE_ACCOUNT_EMAIL] ?: "" }
+
+    // Shared usernames list — migrates legacy single partner_username on first read
+    val sharedUsernames: Flow<List<String>> = context.dataStore.data.map { prefs ->
+        val stored = prefs[KEY_SHARED_USERNAMES]
+        if (stored != null) {
+            stored.split("|").map { it.trim() }.filter { it.isNotEmpty() }
+        } else {
+            val legacy = prefs[KEY_PARTNER_USERNAME] ?: ""
+            if (legacy.isNotBlank()) listOf(legacy) else emptyList()
+        }
+    }
+
+    // Share percentages: "me:50.0|john:30.0|jane:20.0"
+    val sharePercentages: Flow<Map<String, Double>> = context.dataStore.data.map { prefs ->
+        prefs[KEY_SHARE_PERCENTAGES]
+            ?.split("|")
+            ?.mapNotNull { pair ->
+                val idx = pair.lastIndexOf(':')
+                if (idx > 0) pair.substring(0, idx) to (pair.substring(idx + 1).toDoubleOrNull() ?: 0.0)
+                else null
+            }
+            ?.toMap()
+            ?: emptyMap()
+    }
+
     val filterKeywords: Flow<Set<String>> = context.dataStore.data.map { prefs ->
         prefs[KEY_FILTER_KEYWORDS]
             ?.split("|")
@@ -87,6 +114,16 @@ class AppPreferences @Inject constructor(@ApplicationContext private val context
         context.dataStore.edit { it[KEY_PARTNER_USERNAME] = value }
     }
 
+    suspend fun setSharedUsernames(usernames: List<String>) {
+        context.dataStore.edit { it[KEY_SHARED_USERNAMES] = usernames.joinToString("|") }
+    }
+
+    suspend fun setSharePercentages(percentages: Map<String, Double>) {
+        context.dataStore.edit {
+            it[KEY_SHARE_PERCENTAGES] = percentages.entries.joinToString("|") { (k, v) -> "$k:$v" }
+        }
+    }
+
     suspend fun setDriveFolderId(value: String) {
         context.dataStore.edit { it[KEY_DRIVE_FOLDER_ID] = value }
     }
@@ -104,6 +141,10 @@ class AppPreferences @Inject constructor(@ApplicationContext private val context
 
     suspend fun getPartnerUsernameOnce(): String =
         context.dataStore.data.map { it[KEY_PARTNER_USERNAME] ?: "" }.first()
+
+    suspend fun getSharedUsernamesOnce(): List<String> = sharedUsernames.first()
+
+    suspend fun getSharePercentagesOnce(): Map<String, Double> = sharePercentages.first()
 
     suspend fun getDriveFolderIdOnce(): String =
         context.dataStore.data.map { it[KEY_DRIVE_FOLDER_ID] ?: "" }.first()
@@ -125,6 +166,14 @@ class AppPreferences @Inject constructor(@ApplicationContext private val context
     }
 
     suspend fun getCategoriesOnce(): Set<String> = categories.first()
+
+    // Per-shared-person modified time tracking
+    suspend fun getSharedTxnFileModifiedTimeOnce(username: String): String =
+        context.dataStore.data.map { it[stringPreferencesKey("shared_txn_modified_$username")] ?: "" }.first()
+
+    suspend fun setSharedTxnFileModifiedTime(username: String, value: String) {
+        context.dataStore.edit { it[stringPreferencesKey("shared_txn_modified_$username")] = value }
+    }
 
     suspend fun setPartnerTxnFileModifiedTime(value: String) {
         context.dataStore.edit { it[KEY_PARTNER_TXN_FILE_MODIFIED_TIME] = value }
