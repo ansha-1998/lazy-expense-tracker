@@ -48,6 +48,7 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
     val googleEmail by viewModel.googleEmail.collectAsState()
     val isOnline by viewModel.isOnline.collectAsState()
     val isSyncing by viewModel.isSyncing.collectAsState()
+    val autoSyncTimeMinutes by viewModel.autoSyncTimeMinutes.collectAsState()
     val filterKeywords by viewModel.filterKeywords.collectAsState()
     val exclusionKeywords by viewModel.exclusionKeywords.collectAsState()
     val categories by viewModel.categories.collectAsState()
@@ -613,6 +614,50 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+
+                    var showTimePicker by remember { mutableStateOf(false) }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("Daily auto-sync time", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                text = "%02d:%02d".format(autoSyncTimeMinutes / 60, autoSyncTimeMinutes % 60),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(onClick = { showTimePicker = true }) { Text("Change") }
+                    }
+                    Text(
+                        text = "Pick a different time than your partner's to avoid both devices syncing at once.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    if (showTimePicker) {
+                        val timePickerState = rememberTimePickerState(
+                            initialHour = autoSyncTimeMinutes / 60,
+                            initialMinute = autoSyncTimeMinutes % 60,
+                            is24Hour = true
+                        )
+                        AlertDialog(
+                            onDismissRequest = { showTimePicker = false },
+                            title = { Text("Daily auto-sync time") },
+                            text = { TimePicker(state = timePickerState) },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    viewModel.saveAutoSyncTime(timePickerState.hour, timePickerState.minute)
+                                    showTimePicker = false
+                                }) { Text("Save") }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showTimePicker = false }) { Text("Cancel") }
+                            }
+                        )
+                    }
                 }
             }
         }

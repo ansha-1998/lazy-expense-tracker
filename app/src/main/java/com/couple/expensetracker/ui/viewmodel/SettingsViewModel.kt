@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.couple.expensetracker.data.db.entities.TransactionEntity
 import com.couple.expensetracker.data.preferences.AppPreferences
 import com.couple.expensetracker.data.repository.TransactionRepository
+import com.couple.expensetracker.data.sync.DailySyncScheduler
 import com.couple.expensetracker.data.sync.DriveSync
 import com.couple.expensetracker.notification.NotificationHelper
 import com.couple.expensetracker.util.ConnectivityObserver
@@ -57,6 +58,9 @@ class SettingsViewModel @Inject constructor(
 
     val driveFolderId: StateFlow<String> = prefs.driveFolderId
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+
+    val autoSyncTimeMinutes: StateFlow<Int> = prefs.autoSyncTimeMinutes
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AppPreferences.DEFAULT_AUTO_SYNC_TIME_MINUTES)
 
     val lastSynced: StateFlow<Long> = prefs.lastSynced
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
@@ -113,6 +117,14 @@ class SettingsViewModel @Inject constructor(
 
     fun saveDriveFolderId(value: String) {
         viewModelScope.launch { prefs.setDriveFolderId(extractFolderId(value)) }
+    }
+
+    fun saveAutoSyncTime(hour: Int, minute: Int) {
+        viewModelScope.launch {
+            prefs.setAutoSyncTimeMinutes(hour * 60 + minute)
+            // Re-arm immediately so the new time takes effect right away, not after the old one fires.
+            DailySyncScheduler.scheduleNext(context)
+        }
     }
 
     fun setGoogleEmail(email: String) {

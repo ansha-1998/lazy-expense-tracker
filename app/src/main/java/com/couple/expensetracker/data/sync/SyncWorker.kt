@@ -27,6 +27,7 @@ class SyncWorker @AssistedInject constructor(
     companion object {
         private const val DRIVE_SCOPE = "oauth2:https://www.googleapis.com/auth/drive"
         const val UNIQUE_WORK_NAME = "shared_txn_sync"
+        const val KEY_FULL_SYNC = "full_sync"
     }
 
     override suspend fun doWork(): Result {
@@ -34,6 +35,9 @@ class SyncWorker @AssistedInject constructor(
         val myUsername = prefs.myUsername.first()
         val sharedUsernames = prefs.getSharedUsernamesOnce()
         val email = prefs.googleAccountEmail.first()
+        // Always re-arm the next noon/midnight sync, regardless of what triggered this run —
+        // keeps the twice-daily chain alive even if the app process is otherwise never opened.
+        DailySyncScheduler.scheduleNext(applicationContext)
         if (folderId.isBlank() || myUsername.isBlank() || email.isBlank()) return Result.success()
 
         val token = withContext(Dispatchers.IO) {
@@ -44,7 +48,8 @@ class SyncWorker @AssistedInject constructor(
             }
         } ?: return Result.retry()
 
-        val success = driveSync.sync(token, folderId, myUsername, sharedUsernames, fullSync = false)
+        val fullSync = inputData.getBoolean(KEY_FULL_SYNC, false)
+        val success = driveSync.sync(token, folderId, myUsername, sharedUsernames, fullSync = fullSync)
         return if (success) Result.success() else Result.retry()
     }
 }

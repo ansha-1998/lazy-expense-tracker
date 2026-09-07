@@ -28,6 +28,11 @@ class AppPreferences @Inject constructor(@ApplicationContext private val context
         val KEY_EXCLUSION_KEYWORDS = stringPreferencesKey("exclusion_keywords")
         val KEY_PARTNER_TXN_FILE_MODIFIED_TIME = stringPreferencesKey("partner_txn_file_modified_time")
         val KEY_CATEGORIES = stringPreferencesKey("categories")
+        val KEY_AUTO_SYNC_TIME_MINUTES = intPreferencesKey("auto_sync_time_minutes")
+
+        // Default to noon until the user picks their own time in Settings — each partner should
+        // choose a different time to avoid both devices hitting Drive at the same moment.
+        const val DEFAULT_AUTO_SYNC_TIME_MINUTES = 12 * 60
 
         val DEFAULT_CATEGORIES: Set<String> = setOf(
             "Grocery",
@@ -54,6 +59,11 @@ class AppPreferences @Inject constructor(@ApplicationContext private val context
     val driveFolderId: Flow<String> = context.dataStore.data.map { it[KEY_DRIVE_FOLDER_ID] ?: "" }
     val lastSynced: Flow<Long> = context.dataStore.data.map { it[KEY_LAST_SYNCED] ?: 0L }
     val googleAccountEmail: Flow<String> = context.dataStore.data.map { it[KEY_GOOGLE_ACCOUNT_EMAIL] ?: "" }
+
+    // Minutes since midnight (0-1439) — when the daily background auto-sync should run.
+    val autoSyncTimeMinutes: Flow<Int> = context.dataStore.data.map {
+        it[KEY_AUTO_SYNC_TIME_MINUTES] ?: DEFAULT_AUTO_SYNC_TIME_MINUTES
+    }
 
     // Shared usernames list — migrates legacy single partner_username on first read
     val sharedUsernames: Flow<List<String>> = context.dataStore.data.map { prefs ->
@@ -135,6 +145,12 @@ class AppPreferences @Inject constructor(@ApplicationContext private val context
     suspend fun setGoogleAccountEmail(value: String) {
         context.dataStore.edit { it[KEY_GOOGLE_ACCOUNT_EMAIL] = value }
     }
+
+    suspend fun setAutoSyncTimeMinutes(minutes: Int) {
+        context.dataStore.edit { it[KEY_AUTO_SYNC_TIME_MINUTES] = minutes }
+    }
+
+    suspend fun getAutoSyncTimeMinutesOnce(): Int = autoSyncTimeMinutes.first()
 
     suspend fun getMyUsernameOnce(): String =
         context.dataStore.data.map { it[KEY_MY_USERNAME] ?: "" }.first()
